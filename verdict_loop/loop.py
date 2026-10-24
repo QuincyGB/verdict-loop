@@ -16,6 +16,15 @@ Modes:
   LIVE: requires BOTH the --live flag and a signer in the environment
   (AGENT_PRIVATE_KEY or AGENT_KEY_FILE). Every payment is authorized
   against the daily spend cap before it is signed.
+
+Settled pre-flight: before each service check the loop asks Settled
+(settled.tools) — free, read-only — what its scout's test purchases
+found about that endpoint. It is advisory plus one narrow veto: a
+hard negative on Settled's record means the service is not adopted
+whatever RouteVerdict says (in live mode the paid check is skipped
+entirely). On by default; --no-settled, SETTLED_CHECK=0, or
+"settled_check": false in the config turns it off. A Settled outage
+never blocks the loop.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ from .decide import (
     decide_service,
     decide_token,
 )
+from .settled_check import fetch_settled_report
 from .x402 import (
     ServiceError,
     call_paid_endpoint,
@@ -74,7 +84,20 @@ def load_config(path: str | Path) -> dict:
     return config
 
 
-def run_pass(config: dict, *, live: bool, out=print) -> int:
+def _settled_enabled(config: dict, override: bool | None) -> bool:
+    """Resolve the pre-flight toggle: CLI flag > SETTLED_CHECK env >
+    config "settled_check" > default ON."""
+    if override is not None:
+        return override
+    env = (os.environ.get("SETTLED_CHECK") or "").strip().lower()
+    if env:
+        return env not in ("0", "false", "no", "off")
+    if "settled_check" in config:
+        return bool(config["settled_check"])
+    return True
+
+
+def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print) -> int:
     policy = config.get("policy") or {}
     max_risk = float(policy.get("max_risk_score", DEFAULT_MAX_RISK_SCORE))
     min_trust = float(policy.get("min_trust_score", DEFAULT_MIN_TRUST_SCORE))
@@ -83,6 +106,7 @@ def run_pass(config: dict, *, live: bool, out=print) -> int:
     route_url = config.get("route_verdict_url", DEFAULT_ROUTE_VERDICT_URL)
     tokens = config.get("tokens") or []
     services = config.get("services_to_check") or []
+    settled_on = _settled_enabled(config, settled)
 
     # --- mode + signer ------------------------------------------------------
     account = None
@@ -155,6 +179,22 @@ def run_pass(config: dict, *, live: bool, out=print) -> int:
 
         # --- 2. new-service checks -------------------------------------------
         for resource_url in services:
+            # Pre-flight: Settled's delivery record, consulted for free
+            # BEFORE the paid RouteVerdict check. Advisory + narrow veto.
+            sreport = None
+            veto = None
+            if settled_on:
+                sreport = fetch_settled_report(http, resource_url)
+                out(f"[settled] {resource_url}: {sreport.describe()}")
+                veto = sreport.hard_negative
+                if veto:
+                    out(f"        Settled hard negative: {veto}")
+            if veto and live:
+                # Nothing left to ask RouteVerdict: the service cannot be
+                # adopted, so the paid check is skipped entirely.
+                out(f"[service] {resource_url}: -> PASS (Settled pre-flight "
+                    f"veto — RouteVerdict check skipped, nothing paid)")
+                continue
             try:
                 outcome = call_paid_endpoint(
                     http, route_url, {"resource_url": resource_url},
@@ -173,6 +213,10 @@ def run_pass(config: dict, *, live: bool, out=print) -> int:
                     f"{req.get('network')} for a RouteVerdict trust check")
                 out(f"        policy on the check: ADOPT only if TRUSTED and "
                     f"trust score >= {min_trust:g}; otherwise PASS")
+                if veto:
+                    out(f"        settled note: the hard negative above stands "
+                        f"regardless — this service would PASS even on a "
+                        f"TRUSTED result")
             elif outcome.mode == "blocked":
                 out(f"[service] {resource_url}: BLOCKED by spend cap — {outcome.note}")
             else:
@@ -181,6 +225,13 @@ def run_pass(config: dict, *, live: bool, out=print) -> int:
                 decision = decide_service(check, min_trust_score=min_trust)
                 out(f"[service] {resource_url}: verdict {decision.verdict} "
                     f"trust {decision.score:g} -> {decision.action} ({decision.reason})")
+                if sreport is not None and sreport.corroborated:
+                    note = ("corroborated by Settled: its scout's test purchase "
+                            "of this endpoint delivered as advertised")
+                    if decision.action == "ADOPT":
+                        note += (" — the adoption stands on RouteVerdict's rule "
+                                 "alone; Settled only confirms it")
+                    out(f"        {note}")
                 tx = (outcome.receipt or {}).get("transaction")
                 if tx:
                     out(f"        settlement tx: {tx}")
@@ -222,6 +273,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true",
                         help="actually pay (also requires AGENT_PRIVATE_KEY or "
                              "AGENT_KEY_FILE in the environment)")
+    parser.add_argument("--settled", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Settled pre-flight before each service check "
+                             "(default: on; --no-settled disables; the "
+                             "SETTLED_CHECK env var and the config's "
+                             "settled_check key also set it)")
     args = parser.parse_args(argv)
 
     try:
@@ -229,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"ERROR: cannot load config {args.config}: {exc}", file=sys.stderr)
         return 2
-    return run_pass(config, live=args.live)
+    return run_pass(config, live=args.live, settled=args.settled)
 
 
 if __name__ == "__main__":
