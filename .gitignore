@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# live-mode spend ledger — local state, never commit (it is a spending record)
+verdict-loop-budget.json
+# wallet material must never enter this repo
+*.key
+.env

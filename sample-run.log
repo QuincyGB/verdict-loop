@@ -1,0 +1,13 @@
+=== verdict-loop pass @ 2026-10-24T03:33:53Z — mode: DRY-RUN ===
+no payments will be made; every line below is a parsed live 402 challenge plus the standing policy
+daily cap (for live mode): $0.10
+[token] USD Coin (Base) (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, base): DRY-RUN would pay $0.02 to 0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F on eip155:8453 for a Token Verdict screening
+        policy on the verdict: WOULD_BUY only if SOLID and risk score <= 40; otherwise SKIP
+[token] Wrapped Ether (Base) (0x4200000000000000000000000000000000000006, base): DRY-RUN would pay $0.02 to 0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F on eip155:8453 for a Token Verdict screening
+        policy on the verdict: WOULD_BUY only if SOLID and risk score <= 40; otherwise SKIP
+[service] https://token-verdict-production.up.railway.app/v1/verdict: DRY-RUN would pay $0.05 to 0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F on eip155:8453 for a RouteVerdict trust check
+        policy on the check: ADOPT only if TRUSTED and trust score >= 80; otherwise PASS
+--- summary ---
+calls planned: 3 | errors: 0
+would spend: $0.09 against a $0.10 daily cap
+cap projection: all 3 calls fit under the cap
