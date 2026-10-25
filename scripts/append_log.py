@@ -7,12 +7,16 @@ Usage:
 
 The parser reads the loop's own stdout format (verdict_loop/loop.py):
 token/service verdict lines, settlement tx lines, the Settled
-pre-flight lines, the balance-guard lines, and the closing summary.
-Each entry ends with a machine-readable marker
+pre-flight lines, the balance-guard lines, cap-stop lines, and the
+closing summary. Each entry ends with a machine-readable marker
 (<!-- entry spent_usd=… cumulative_usd=… -->) so the cumulative total
 survives across runs without trusting prose. If the summary line is
 missing (a crash mid-pass), the day's settled total is taken from the
-budget ledger instead, when its date matches the run date.
+budget ledger instead, when its date matches the run date — and the
+pass spend is derived as that total minus what the log already
+recorded for the date, never by treating the day total as the pass
+spend. A run that ended in a cap stop is rendered as a completed
+policy stop, not an error.
 """
 
 from __future__ import annotations
@@ -44,7 +48,10 @@ RE_INSUFFICIENT = re.compile(
 RE_SPENT = re.compile(
     r"spent this pass: \$([\d.]+) \| spent today: \$([\d.]+) of \$([\d.]+) cap")
 RE_CALLS = re.compile(r"calls planned: (\d+) \| errors: (\d+)")
+RE_CAP_STOP = re.compile(r"cap stop: (.*)")
+RE_RECOVERED = re.compile(r"RECOVERED ENTRY[ —-]*(.*)")
 RE_MARKER = re.compile(r"<!-- entry spent_usd=([\d.]+) cumulative_usd=([\d.]+) -->")
+RE_HEADING_DATE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\b")
 
 
 def _attach_tx(entries: list[dict], tx: str) -> None:
@@ -131,17 +138,52 @@ def parse_run(text: str) -> dict:
             run["calls_planned"] = int(m.group(1))
             run["errors"] = int(m.group(2))
             continue
+        m = RE_CAP_STOP.search(line)
+        if m:
+            run["cap_stop"] = m.group(1)
+            continue
+        m = RE_RECOVERED.search(line)
+        if m:
+            run["recovered"] = m.group(1) or True
+            continue
     return run
 
 
-def ledger_spent_units(budget_state: Path, date: str) -> int | None:
+def ledger_state(budget_state: Path, date: str) -> tuple[int, int] | None:
+    """(spent_units, cap_units) from the budget ledger, when its date
+    matches the run date; None otherwise."""
     try:
         data = json.loads(budget_state.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if isinstance(data, dict) and data.get("date") == date:
-        return int(data.get("spent_units", 0))
+        return int(data.get("spent_units", 0)), int(data.get("cap_units", 0))
     return None
+
+
+def ledger_spent_units(budget_state: Path, date: str) -> int | None:
+    state = ledger_state(budget_state, date)
+    return state[0] if state is not None else None
+
+
+def logged_spend_for_date(existing_log: str, date: str) -> float:
+    """Sum of the entry markers already logged under `date` headings.
+
+    Used to derive a crashed run's own spend from the ledger's day
+    total: pass spend = day total − already-logged spend for the date.
+    """
+    total = 0.0
+    in_date = False
+    for line in existing_log.splitlines():
+        m = RE_HEADING_DATE.match(line)
+        if m:
+            in_date = m.group(1) == date
+            continue
+        if in_date:
+            m = RE_MARKER.search(line)
+            if m:
+                total += float(m.group(1))
+    return total
 
 
 def render_entry(run: dict, *, date: str, exit_code: int,
@@ -155,8 +197,24 @@ def render_entry(run: dict, *, date: str, exit_code: int,
     status = "live run" if exit_code == 0 else f"live run (exit {exit_code})"
     if run.get("insufficient"):
         status = "skipped — insufficient funds (nothing signed, nothing paid)"
+    elif run.get("cap_stop"):
+        # A cap stop is a completed policy outcome, not a failure —
+        # say so even when the run being logged originally exited
+        # non-zero (e.g. a recovered entry for a crashed run).
+        status = "live run — completed with cap stop (policy stop, not an error)"
+    if run.get("recovered"):
+        status += " · recovered/backfilled entry"
     lines.append(f"## {date} — {status}")
     lines.append("")
+    if run.get("recovered"):
+        note = run["recovered"] if isinstance(run["recovered"], str) else ""
+        lines.append(
+            "- **Recovered entry:** this entry was backfilled after the "
+            "fact from the run's records (cron run record, budget "
+            "ledger, guard audit log, settlement transactions)."
+            + (f" {note}" if note else ""))
+    if run.get("cap_stop"):
+        lines.append(f"- **Cap stop:** {run['cap_stop']}")
     if run.get("insufficient"):
         ins = run["insufficient"]
         lines.append(
@@ -216,10 +274,20 @@ def render_entry(run: dict, *, date: str, exit_code: int,
             f"- **Calls:** {run['calls_planned']} planned, "
             f"{run.get('errors', 0)} errors.")
     if run.get("spent_pass") is not None:
-        lines.append(
-            f"- **Spent:** ${spent:.2f} this run "
-            f"(${run['spent_today']:.2f} today of ${run['cap']:.2f} cap) · "
-            f"**Cumulative logged spend: ${cumulative:.6f}**")
+        # spent_today / cap ride along with spent_pass when the run's
+        # own summary was parsed, but a ledger-fallback run may carry
+        # only some of the fields — never KeyError over a missing one
+        # (that crash is what lost the 2026-10-25 08:00 entry).
+        if run.get("spent_today") is not None and run.get("cap") is not None:
+            lines.append(
+                f"- **Spent:** ${spent:.2f} this run "
+                f"(${run['spent_today']:.2f} today of ${run['cap']:.2f} cap) · "
+                f"**Cumulative logged spend: ${cumulative:.6f}**")
+        else:
+            lines.append(
+                f"- **Spent:** ${spent:.6f} this run "
+                f"(daily total / cap not in the run output) · "
+                f"**Cumulative logged spend: ${cumulative:.6f}**")
     else:
         lines.append(
             f"- **Spent:** no summary line in the run output (see raw log "
@@ -257,17 +325,28 @@ def main(argv: list[str] | None = None) -> int:
     else:
         date = datetime.now(timezone.utc).date().isoformat()
 
-    # Fallback spend figure: the budget ledger, when the run crashed
-    # before printing its summary but its date matches the ledger's.
-    if run.get("spent_pass") is None and not run.get("insufficient"):
-        units = ledger_spent_units(Path(args.budget_state), date)
-        if units is not None:
-            run["spent_pass"] = units / 1_000_000
-
     log_path = Path(args.log)
     existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
     markers = RE_MARKER.findall(existing)
     prior = float(markers[-1][1]) if markers else 0.0
+
+    # Fallback spend figures: the budget ledger, when the run crashed
+    # before printing its summary but its date matches the ledger's.
+    # The ledger holds the DAY total: it fills spent_today / cap
+    # directly, and the pass spend is the day total minus what this
+    # log already recorded for the date — not the day total itself.
+    if not run.get("insufficient"):
+        state = ledger_state(Path(args.budget_state), date)
+        if state is not None:
+            spent_units, cap_units = state
+            if run.get("spent_today") is None:
+                run["spent_today"] = spent_units / 1_000_000
+            if run.get("cap") is None and cap_units:
+                run["cap"] = cap_units / 1_000_000
+            if run.get("spent_pass") is None:
+                already = logged_spend_for_date(existing, date)
+                run["spent_pass"] = max(
+                    0.0, run["spent_today"] - already)
 
     entry, _ = render_entry(run, date=date, exit_code=args.exit_code,
                             prior_cumulative=prior)

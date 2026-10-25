@@ -16,7 +16,11 @@ import httpx
 import pytest
 from eth_account import Account
 
+from x402_guard import SpendCapExceeded as GuardSpendCapExceeded
+from x402_guard import call_paid_endpoint as guard_call_paid_endpoint
+
 from verdict_loop.budget import DailySpendCap
+from verdict_loop.loop import _GuardBudget
 from verdict_loop.x402 import SpendCapExceeded, call_paid_endpoint
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -122,6 +126,33 @@ def test_live_calls_record_spend_exactly(tmp_path):
     assert first.receipt["transaction"] == "0xdeadbeef"
     assert service.paid_attempts == 2
     assert cap.spent_units == 40_000
+
+
+def test_guard_budget_adapter_translates_the_cap_exception(tmp_path):
+    """Regression for the 2026-10-25 crash: DailySpendCap raises
+    verdict_loop's SpendCapExceeded, but x402-guard's payment client
+    catches its OWN class of that name. The adapter the loop hands
+    the guard must translate, or the refusal escapes as a crash."""
+    cap = DailySpendCap(10_000, state_path=tmp_path / "budget.json")
+    adapter = _GuardBudget(cap)
+    adapter.authorize(10_000)  # exactly at the cap: fine
+    with pytest.raises(GuardSpendCapExceeded):
+        adapter.authorize(10_001)
+
+
+def test_guard_client_returns_blocked_not_crash_with_loop_budget(tmp_path):
+    """Through the guard's own client, an adapted loop budget yields
+    a clean "blocked" outcome — nothing signed, nothing recorded."""
+    service = FakeService()
+    cap = DailySpendCap(10_000, state_path=tmp_path / "budget.json")
+    account = Account.create()
+    with client_for(service) as http:
+        outcome = guard_call_paid_endpoint(
+            http, URL, BODY, account=account, budget=_GuardBudget(cap))
+    assert outcome.mode == "blocked"
+    assert outcome.response is None
+    assert service.paid_attempts == 0
+    assert cap.spent_units == 0
 
 
 def test_cap_blocks_before_signing(tmp_path):

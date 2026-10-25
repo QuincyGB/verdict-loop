@@ -41,6 +41,18 @@ call (the guard's own check calls included) is authorized and
 recorded against the one $0.10/day cap. Guard state (drift cache,
 audit log) lives in local files named by the config's "guard"
 section; both are gitignored.
+
+Cap accounting: check spend SHARES the $0.10 cap by design — a fresh
+day's full pass costs $0.095 worst case ($0.04 token screens + $0.005
+cold-cache Recheck + $0.05 service check), inside the cap. When the
+day's remaining budget cannot cover a stage, the pass degrades in a
+fixed order: the OPTIONAL service check is skipped first (priced
+worst-case, fresh guard checks included, before it starts); token
+screens are never skipped for cap reasons. A cap stop is a policy
+outcome, not an error: the pass prints a "cap stop:" line, the run
+summary still prints (its "spent this pass" is the budget ledger's
+delta, guard check spend included), and the exit code stays 0
+unless a real error also occurred.
 """
 
 from __future__ import annotations
@@ -49,12 +61,17 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from x402_guard import GuardBlocked, GuardConfig, GuardedClient
 from x402_guard.config import DEFAULT_RECHECK_URL
+from x402_guard.x402client import (
+    ServiceError as GuardServiceError,
+    SpendCapExceeded as GuardSpendCapExceeded,
+)
 
 from .budget import DailySpendCap
 from .decide import (
@@ -66,6 +83,7 @@ from .decide import (
 from .wallet import usdc_balance_units
 from .x402 import (
     ServiceError,
+    SpendCapExceeded,
     call_paid_endpoint,
     format_usd,
     load_account_from_env,
@@ -74,6 +92,47 @@ from .x402 import (
 DEFAULT_TOKEN_VERDICT_URL = "https://token-verdict-production.up.railway.app/v1/verdict"
 DEFAULT_ROUTE_VERDICT_URL = "https://route-verdict-production.up.railway.app/v1/check"
 USDC_UNITS_PER_DOLLAR = 1_000_000
+RECHECK_PRICE_UNITS = 5_000  # StallRow /v1/recheck — the guard's drift check
+
+
+class _GuardBudget:
+    """Adapt the loop's DailySpendCap to x402-guard's budget interface.
+
+    The guard's payment client catches *its own* SpendCapExceeded
+    class (x402_guard.x402client) and turns a refusal into a clean
+    "blocked" outcome. DailySpendCap raises verdict_loop's distinct
+    class of the same name — unadapted, the refusal escaped the guard
+    as an unhandled exception and crashed the 2026-10-25 run after
+    its token screens had settled. This adapter translates the
+    exception vocabulary; the ledger itself is untouched.
+    """
+
+    def __init__(self, budget: DailySpendCap):
+        self._budget = budget
+
+    @property
+    def spent_units(self) -> int:
+        return self._budget.spent_units
+
+    @property
+    def cap_units(self) -> int:
+        return self._budget.cap_units
+
+    @property
+    def remaining_units(self) -> int:
+        return self._budget.remaining_units
+
+    def authorize(self, units: int) -> None:
+        try:
+            self._budget.authorize(units)
+        except SpendCapExceeded as exc:
+            raise GuardSpendCapExceeded(str(exc)) from exc
+
+    def record(self, units: int, *, label: str = "") -> None:
+        try:
+            self._budget.record(units, label=label)
+        except SpendCapExceeded as exc:
+            raise GuardSpendCapExceeded(str(exc)) from exc
 
 
 def _scrub_no_proxy() -> None:
@@ -135,9 +194,11 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                 "(set AGENT_PRIVATE_KEY or AGENT_KEY_FILE). Refusing to run.")
             return 2
     budget = None
+    budget_start_units = 0
     if live:
         state = config.get("budget_state", "verdict-loop-budget.json")
         budget = DailySpendCap(cap_units, state_path=state)
+        budget_start_units = budget.spent_units
 
     mode_label = "LIVE" if live else "DRY-RUN"
     out(f"=== verdict-loop pass @ {_ts()} — mode: {mode_label} ===")
@@ -161,6 +222,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
         _scrub_no_proxy()
         planned_units = 0
         probe_failed = False
+        service_price_units: dict[str, int] = {}
         with httpx.Client(timeout=30.0) as probe:
             for entry in tokens:
                 try:
@@ -178,6 +240,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                         probe, route_url, {"resource_url": resource_url},
                     )
                     planned_units += outcome.price_units
+                    service_price_units[resource_url] = outcome.price_units
                 except ServiceError:
                     probe_failed = True
             balance_units = usdc_balance_units(probe, account.address)
@@ -201,6 +264,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
     errors = 0
     would_spend = 0
     spent = 0
+    cap_stop_reason: str | None = None
     planned: list[int] = []  # prices in call order, for the dry-run cap projection
 
     _scrub_no_proxy()
@@ -213,7 +277,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
         guard_settings = config.get("guard") or {}
         guard = GuardedClient(
             account=account,
-            budget=budget,
+            budget=_GuardBudget(budget) if budget is not None else None,
             http=http,
             config=GuardConfig(
                 settled_enabled=settled_on,
@@ -246,8 +310,18 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                         f"{gdecision.settled_report.describe()}")
                 out(f"[token] {label}: BLOCKED by x402-guard — "
                     f"{'; '.join(gdecision.reasons)}")
+                if any("spend" in r and ("cap" in r or "budget" in r)
+                       for r in gdecision.reasons):
+                    cap_stop_reason = "; ".join(gdecision.reasons)
                 continue
-            except ServiceError as exc:
+            except (GuardSpendCapExceeded, SpendCapExceeded) as exc:
+                # A cap refusal is a policy stop, never a crash — even
+                # if one escapes the guard on a path the adapter did
+                # not translate.
+                cap_stop_reason = str(exc)
+                out(f"[token] {label}: BLOCKED by spend cap — {exc}")
+                continue
+            except (ServiceError, GuardServiceError) as exc:
                 errors += 1
                 out(f"[token] {label} ({address}, {chain}): ERROR {exc}")
                 continue
@@ -262,6 +336,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                 out(f"        policy on the verdict: WOULD_BUY only if SOLID and "
                     f"risk score <= {max_risk:g}; otherwise SKIP")
             elif outcome.mode == "blocked":
+                cap_stop_reason = outcome.note
                 out(f"[token] {label}: BLOCKED by spend cap — {outcome.note}")
             else:
                 spent += outcome.price_units
@@ -283,6 +358,46 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
 
         # --- 2. new-service checks -------------------------------------------
         for resource_url in services:
+            # Degradation order, step 1: the service check is the
+            # OPTIONAL stage. Price it worst-case before it starts —
+            # the RouteVerdict call plus any guard check that would
+            # run fresh (a cold drift look at this target; a fresh
+            # RouteVerdict gate look if the payment is at/above the
+            # gate threshold). If the day's remaining cap cannot cover
+            # that, skip the service check cleanly instead of letting
+            # the guard spend check money and then trip at the final
+            # payment. Token screens above are never skipped this way.
+            if live and budget is not None:
+                price = service_price_units.get(resource_url)
+                if price is not None:
+                    fresh_checks = 0
+                    now_ts = time.time()
+                    if guard.config.drift_enabled:
+                        cached = guard.store.get_check(resource_url)
+                        if (cached is None or now_ts - float(cached["checked_at"])
+                                >= guard.config.drift_ttl_seconds):
+                            fresh_checks += RECHECK_PRICE_UNITS
+                    if (guard.config.route_verdict_enabled
+                            and price >= guard.config.route_verdict_threshold_units):
+                        cached_rv = guard.store.get_route_verdict(resource_url)
+                        if (cached_rv is None
+                                or now_ts - float(cached_rv["checked_at"])
+                                >= guard.config.drift_ttl_seconds):
+                            fresh_checks += price
+                    reserve = price + fresh_checks
+                    if budget.spent_units + reserve > cap_units:
+                        planned.append(price)
+                        cap_stop_reason = (
+                            f"optional service check skipped before signing: "
+                            f"worst case {format_usd(reserve)} "
+                            f"({format_usd(price)} service call + "
+                            f"{format_usd(fresh_checks)} fresh guard checks) "
+                            f"exceeds the {format_usd(budget.remaining_units)} "
+                            f"left of today's {format_usd(cap_units)} cap "
+                            f"(already spent {format_usd(budget.spent_units)})")
+                        out(f"[service] {resource_url}: BLOCKED by spend cap "
+                            f"— {cap_stop_reason}")
+                        continue
             # The guard runs the Settled pre-flight (advisory + the
             # narrow veto) as stage 1 of its pipeline, then — only if
             # the target passes — makes the paid RouteVerdict check.
@@ -307,8 +422,18 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                 else:
                     out(f"[service] {resource_url}: BLOCKED by x402-guard — "
                         f"{'; '.join(gdecision.reasons)}")
+                    if any("spend" in r and ("cap" in r or "budget" in r)
+                           for r in gdecision.reasons):
+                        cap_stop_reason = "; ".join(gdecision.reasons)
                 continue
-            except ServiceError as exc:
+            except (GuardSpendCapExceeded, SpendCapExceeded) as exc:
+                # The 2026-10-25 failure mode: a cap refusal escaping
+                # the guard as an exception. It is a policy stop —
+                # record it and finish the pass, never crash.
+                cap_stop_reason = str(exc)
+                out(f"[service] {resource_url}: BLOCKED by spend cap — {exc}")
+                continue
+            except (ServiceError, GuardServiceError) as exc:
                 errors += 1
                 out(f"[service] {resource_url}: ERROR {exc}")
                 continue
@@ -333,6 +458,7 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                         f"regardless — this service would PASS even on a "
                         f"TRUSTED result")
             elif outcome.mode == "blocked":
+                cap_stop_reason = outcome.note
                 out(f"[service] {resource_url}: BLOCKED by spend cap — {outcome.note}")
             else:
                 spent += outcome.price_units
@@ -356,8 +482,15 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
     # --- 3. summary -----------------------------------------------------------
     out("--- summary ---")
     out(f"calls planned: {len(planned)} | errors: {errors}")
+    if cap_stop_reason:
+        out(f"cap stop: {cap_stop_reason}")
     if live:
-        out(f"spent this pass: {format_usd(spent)} | spent today: "
+        # "Spent this pass" is the budget ledger's delta, not the sum
+        # of the loop's own outcome prices: the guard's check calls
+        # (Recheck drift looks) settle against the same cap and are
+        # part of what this pass spent.
+        pass_spent_units = budget.spent_units - budget_start_units
+        out(f"spent this pass: {format_usd(pass_spent_units)} | spent today: "
             f"{format_usd(budget.spent_units)} of {format_usd(cap_units)} cap")
     else:
         out(f"would spend: {format_usd(would_spend)} against a "

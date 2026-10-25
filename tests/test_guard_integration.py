@@ -237,6 +237,68 @@ def test_second_pass_reuses_the_guards_cached_drift_check(tmp_path, monkeypatch)
     assert router.route.paid_attempts == 2
 
 
+def test_cap_stop_skips_the_service_check_and_still_completes(
+        tmp_path, monkeypatch):
+    """The 2026-10-25 08:00 failure, as a regression: an earlier pass
+    the same UTC day had already settled $0.04, so after this pass's
+    token screens ($0.04) + cold-cache Recheck ($0.005) only $0.015 of
+    the cap remained — not enough for the $0.05 service check. The
+    pass must degrade in order (optional service check skipped first,
+    token screens untouched), print a cap stop, produce its summary,
+    and exit 0 — not crash inside the guard."""
+    DailySpendCap(100_000, state_path=tmp_path / "budget.json").record(
+        40_000, label="earlier pass today")
+    router = Router()
+    config = make_config(
+        tmp_path,
+        tokens=[
+            {"address": WETH, "chain": "base",
+             "label": "Wrapped Ether (Base)"},
+            {"address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+             "chain": "base", "label": "Aerodrome AERO (Base)"},
+        ],
+        services=[TARGET],
+    )
+    code, text = run_live(tmp_path, monkeypatch, router, config)
+    assert code == 0  # a policy stop completes; it is not a failure
+    assert "cap stop:" in text
+    assert "optional service check skipped" in text
+    # Both token screens settled; the drift look ran once; the
+    # service check was never paid.
+    assert router.token.paid_attempts == 2
+    assert router.recheck.paid_attempts == 1
+    assert router.route.paid_attempts == 0
+    cap = DailySpendCap(100_000, state_path=tmp_path / "budget.json")
+    assert cap.spent_units == 85_000
+    # The summary's pass spend is the ledger delta — guard check
+    # spend included ($0.045), not just the token prices ($0.04).
+    assert "spent this pass: $0.045" in text
+    assert "spent today: $0.085" in text
+
+
+def test_fresh_day_full_pass_fits_the_cap(tmp_path, monkeypatch):
+    """Cap sizing: on a fresh day a full pass — two token screens, a
+    cold-cache Recheck, and the service check — costs $0.095 and
+    fits the $0.10 cap whole, with no cap stop."""
+    router = Router()
+    config = make_config(
+        tmp_path,
+        tokens=[
+            {"address": WETH, "chain": "base",
+             "label": "Wrapped Ether (Base)"},
+            {"address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+             "chain": "base", "label": "Aerodrome AERO (Base)"},
+        ],
+        services=[TARGET],
+    )
+    code, text = run_live(tmp_path, monkeypatch, router, config)
+    assert code == 0
+    assert "-> ADOPT" in text
+    assert "cap stop:" not in text
+    cap = DailySpendCap(100_000, state_path=tmp_path / "budget.json")
+    assert cap.spent_units == 95_000
+
+
 def test_token_screening_runs_through_the_guard(tmp_path, monkeypatch):
     router = Router()
     config = make_config(

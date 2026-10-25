@@ -12,7 +12,9 @@
 # ledger is gitignored too).
 #
 # Exit status is the loop's own exit code:
-#   0 = pass completed, 1 = completed with service errors,
+#   0 = pass completed (including a policy cap stop — the run prints
+#       a "cap stop:" summary line and the log records the stop),
+#   1 = completed with service errors,
 #   2 = no signer / bad config, 3 = insufficient funds (clean stop).
 set -uo pipefail
 cd "$(dirname "$0")/.."

@@ -88,6 +88,18 @@ AGENT_PRIVATE_KEY=0x... .venv/bin/python -m verdict_loop --config config.json --
   cold (the watchlist's calls share one endpoint, so one Recheck look
   covers the pass) — $0.095 worst case, inside the cap. Raising the cap
   or the watchlist is your explicit choice, in the config.
+- **Cap stops degrade in a fixed order, and are not errors.** Guard
+  check spend shares the cap (above), so a day that starts with spend
+  already on the ledger may not fit a whole pass. When the remaining
+  budget cannot cover the next stage, the pass skips the *optional
+  service check* first — priced worst-case (fresh guard checks
+  included) before it starts — and never skips token screens for cap
+  reasons. The run prints a `cap stop:` summary line, the public log
+  records the stop as a completed policy outcome, and the exit code
+  stays 0 unless a real error also occurred. (This ordering is the
+  fix for the 2026-10-25 08:00 run, where a cap refusal escaped the
+  guard as an exception, crashed the pass after its token screens
+  had settled, and the day's log entry was lost.)
 - Never commit a key. `.gitignore` already excludes `*.key` and `.env`.
 
 ## Configuration

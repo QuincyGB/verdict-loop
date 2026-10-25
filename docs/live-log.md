@@ -54,3 +54,20 @@ spent this pass: $0.04 | spent today: $0.04 of $0.10 cap
 </details>
 
 <!-- entry spent_usd=0.040000 cumulative_usd=0.040000 -->
+
+## 2026-10-25 — live run (08:00 America/Toronto) — completed with cap stop · recovered/backfilled entry
+
+- **Recovered entry:** backfilled after the fact on 2026-10-25 from the cron run record, the budget ledger, the x402-guard audit log, and the settlement transactions below. The original run's entry was never written: a spend-cap refusal escaped the guard as an exception and crashed the pass, and the log append then failed with `KeyError 'spent_today'`. Both faults are fixed in the commit that adds this entry. The original stdout transcript was not retained, so no raw log is attached to this entry — every figure below comes from the records named above.
+- **Balance guard:** payer held $0.691957 USDC; planned spend $0.09.
+- **Tokens screened:**
+  - Wrapped Ether (Base) (WETH): verdict **SOLID**, risk 16.4 → **WOULD_BUY** (SOLID with risk score 16.4 <= max 40)
+    - settlement tx: [`0xe4ff82a8b1ab1e49b54fab612c658273f91d657b610484107513a667991d1a82`](https://basescan.org/tx/0xe4ff82a8b1ab1e49b54fab612c658273f91d657b610484107513a667991d1a82)
+  - Aerodrome AERO (Base) (AERO): verdict **SOLID**, risk 8.2 → **WOULD_BUY** (SOLID with risk score 8.2 <= max 40)
+    - settlement tx: [`0x6ea20a29653ff652c13d40539e5f2ecc40a9b529cc8e2db2ec13e99efc9be774`](https://basescan.org/tx/0x6ea20a29653ff652c13d40539e5f2ecc40a9b529cc8e2db2ec13e99efc9be774)
+- **Guard checks:** one StallRow Recheck drift check ($0.005, result BASELINE) ran during the first token screen; the second screen used the guard's cache. Check spend shares the daily cap by design.
+- **Services vetted:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: **SKIPPED — cap stop** (the optional service check is the first stage dropped; paying its $0.05 would have brought the day to $0.135, over the $0.10 cap — $0.085 was already spent: $0.04 by the 05:01 UTC pass above, $0.045 by this one). No Settled pre-flight line and no ADOPT/PASS were produced for this stage.
+- **Calls:** 2 token screens settled, 1 guard drift check settled, service check skipped (cap stop), 0 service errors.
+- **Spent:** $0.045000 this run ($0.085 today of $0.10 cap) · **Cumulative logged spend: $0.085000**
+
+<!-- entry spent_usd=0.045000 cumulative_usd=0.085000 -->
