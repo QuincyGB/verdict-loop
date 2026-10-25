@@ -15,7 +15,11 @@ Modes:
   invents a verdict.
   LIVE: requires BOTH the --live flag and a signer in the environment
   (AGENT_PRIVATE_KEY or AGENT_KEY_FILE). Every payment is authorized
-  against the daily spend cap before it is signed.
+  against the daily spend cap before it is signed. A balance guard
+  runs first: the pass is priced with unpaid probes and the payer's
+  USDC balance is read from the chain — a known balance below the
+  planned spend stops the run cleanly (exit 3, INSUFFICIENT FUNDS)
+  before anything is signed; an unreadable balance only warns.
 
 Settled pre-flight: before each service check the loop asks Settled
 (settled.tools) — free, read-only — what its scout's test purchases
@@ -46,6 +50,7 @@ from .decide import (
     decide_token,
 )
 from .settled_check import fetch_settled_report
+from .wallet import usdc_balance_units
 from .x402 import (
     ServiceError,
     call_paid_endpoint,
@@ -130,6 +135,55 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
         out("no payments will be made; every line below is a parsed live "
             "402 challenge plus the standing policy")
         out(f"daily cap (for live mode): {format_usd(cap_units)}")
+
+    if live:
+        # --- balance guard --------------------------------------------------
+        # Probe every planned call unpaid to price the pass, then read
+        # the payer's USDC balance from the chain. A KNOWN balance below
+        # the planned spend stops the run cleanly (exit 3) before
+        # anything is signed — never mid-screen with a half-paid pass.
+        # An unreadable balance (every public RPC down) only warns: the
+        # spend cap still bounds the pass, and an RPC outage must not
+        # brick the agent.
+        _scrub_no_proxy()
+        planned_units = 0
+        probe_failed = False
+        with httpx.Client(timeout=30.0) as probe:
+            for entry in tokens:
+                try:
+                    outcome = call_paid_endpoint(
+                        probe, token_url,
+                        {"address": entry["address"],
+                         "chain": entry.get("chain", "base")},
+                    )
+                    planned_units += outcome.price_units
+                except ServiceError:
+                    probe_failed = True
+            for resource_url in services:
+                try:
+                    outcome = call_paid_endpoint(
+                        probe, route_url, {"resource_url": resource_url},
+                    )
+                    planned_units += outcome.price_units
+                except ServiceError:
+                    probe_failed = True
+            balance_units = usdc_balance_units(probe, account.address)
+        if probe_failed:
+            planned_units = cap_units  # price the unprobable at the cap
+        if balance_units is None:
+            out("balance guard: WARNING — could not read the payer's USDC "
+                "balance from any public Base RPC; proceeding on the "
+                "spend cap alone")
+        elif balance_units < planned_units:
+            out(f"INSUFFICIENT FUNDS: payer {account.address} holds "
+                f"{format_usd(balance_units)} USDC on Base, but this pass "
+                f"plans to spend {format_usd(planned_units)} (daily cap "
+                f"{format_usd(cap_units)}). Nothing was signed or paid — "
+                f"fund the wallet and re-run.")
+            return 3
+        else:
+            out(f"balance guard: payer holds {format_usd(balance_units)} "
+                f"USDC on Base; planned spend {format_usd(planned_units)}")
 
     errors = 0
     would_spend = 0

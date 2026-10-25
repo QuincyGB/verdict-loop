@@ -15,6 +15,20 @@ settled through the x402 v2 `exact` scheme:
 
 Both pay to the fleet wallet `0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F`.
 
+## Live demo — running daily, in public
+
+This loop runs **live every day at 08:00 America/Toronto** from the
+fleet's own agent wallet, under the $0.10/day cap, and every run is
+appended to the public log: **[docs/live-log.md](docs/live-log.md)**.
+
+> Self-funded demonstration run by Verdict Row (the seller) to show
+> the monitoring-loop pattern. These are our own calls on our own
+> routes — not customer traffic.
+
+The runner is `scripts/run_daily.sh`; the log entries carry each
+call's verdict, the decision it produced, and the settlement
+transaction hash, so the spend is verifiable on-chain by anyone.
+
 ## Architecture (6 lines)
 
 1. `verdict_loop/loop.py` runs one pass over a JSON watchlist (config file).
@@ -61,6 +75,12 @@ AGENT_PRIVATE_KEY=0x... .venv/bin/python -m verdict_loop --config config.json --
   code before any signature: a payment that would break the cap is reported
   `BLOCKED` and never signed. Settled payments are recorded in
   `verdict-loop-budget.json` (gitignored — it is a spending record).
+- A **balance guard** runs before the pass: the planned calls are priced
+  with unpaid probes and the payer's USDC balance is read from the chain.
+  A known balance below the planned spend stops the run cleanly
+  (`INSUFFICIENT FUNDS`, exit code **3**) before anything is signed —
+  never mid-screen. If the balance cannot be read at all (public RPCs
+  down), the run warns and proceeds on the cap alone.
 - The cap ledger resets on the UTC day boundary.
 - Start with the default watchlist: a full pass costs $0.09, inside the cap.
   Raising the cap or the watchlist is your explicit choice, in the config.
