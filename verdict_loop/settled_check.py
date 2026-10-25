@@ -10,10 +10,16 @@ for free, what Settled's own test purchases found.
 The consultation is advisory with one narrow veto:
 
 - Settled shows a hard negative for the endpoint (a delivery receipt
-  with delivered=false, a receipt verdict other than as_advertised,
-  or an explicit not-payable verdict) -> the loop will NOT adopt the
-  service, whatever RouteVerdict says. In live mode the paid
-  RouteVerdict check is skipped too — there is nothing left to ask.
+  with delivered=false, or an explicit not-payable verdict) -> the
+  loop will NOT adopt the service, whatever RouteVerdict says. In
+  live mode the paid RouteVerdict check is skipped too — there is
+  nothing left to ask. A receipt's comparison verdict (as_advertised,
+  partial_match, nothing_to_compare, ...) is NEVER a veto on its own:
+  those grade the listing's sample, not the delivery. In particular
+  nothing_to_compare — Settled had no usable sample in the listing it
+  holds, so it could not compare fields — says nothing bad about an
+  endpoint whose delivery verified, and the report says so out loud
+  (see SettledReport.describe) instead of quietly passing.
 - Settled shows delivery_verified=true -> the ADOPT line is annotated
   as corroborated. That is all: the standing rule (ADOPT only
   TRUSTED at trust >= min) is never loosened by a Settled record.
@@ -131,21 +137,27 @@ class SettledReport:
         return self.available and self.found and self.delivery_verified is True
 
     @property
+    def nothing_to_compare(self) -> bool:
+        """The latest receipt Settled holds could not be compared
+        against the listing (it publishes no usable sample in the copy
+        Settled ingested). A gap in the listing, not a delivery
+        failure — reported distinctly, never a veto."""
+        return self.has_receipt and self.receipt_verdict == "nothing_to_compare"
+
+    @property
     def hard_negative(self) -> str | None:
-        """A veto reason, or None. Deliberately narrow: only explicit
-        negative records veto — an absent record, an untested endpoint
-        (delivery_verified null), and quality scores never do."""
+        """A veto reason, or None. Deliberately narrow: only a failed
+        delivery (delivered=false) or an explicit not-payable verdict
+        vetoes — an absent record, an untested endpoint
+        (delivery_verified null), quality scores, and receipt
+        comparison verdicts (nothing_to_compare, partial_match, ...)
+        never do."""
         if not self.available or not self.found:
             return None
         if self.has_receipt and self.receipt_delivered is False:
             return (
                 "Settled's delivery receipt for this endpoint records "
                 "delivered=false (its test purchase did not deliver)"
-            )
-        if self.receipt_verdict and self.receipt_verdict != "as_advertised":
-            return (
-                f"Settled's delivery receipt verdict is "
-                f"{self.receipt_verdict!r}, not 'as_advertised'"
             )
         if (
             self.payability_verdict
@@ -177,6 +189,19 @@ class SettledReport:
             parts.append("a Settled test purchase is on record")
         else:
             parts.append("no delivery record yet")
+        if self.nothing_to_compare:
+            if self.corroborated:
+                parts.append(
+                    "latest receipt had nothing to compare "
+                    "(no usable sample in Settled's listing) — "
+                    "proceeding on verified delivery"
+                )
+            else:
+                parts.append(
+                    "latest receipt had nothing to compare "
+                    "(no usable sample in Settled's listing) — "
+                    "not a delivery failure, no veto"
+                )
         return ", ".join(parts)
 
 

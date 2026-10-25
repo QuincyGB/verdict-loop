@@ -148,13 +148,60 @@ def test_failed_delivery_receipt_vetoes():
     assert "delivered=false" in report.hard_negative
 
 
-def test_receipt_verdict_other_than_as_advertised_vetoes():
+def test_receipt_comparison_verdict_alone_never_vetoes():
+    # A comparison verdict grades the listing's sample, not the
+    # delivery: with the purchase delivered, no receipt verdict —
+    # fields_missing included — is a hard negative.
     payload = load("settled_check_verified.json")
     payload["delivery_receipt"]["checks"]["verdict"] = "fields_missing"
     payload["delivery_receipt"]["checks"]["as_advertised"] = False
     report = SettledReport.from_payload(VERIFIED_URL, payload)
-    assert report.hard_negative is not None
-    assert "fields_missing" in report.hard_negative
+    assert report.receipt_delivered is True
+    assert report.hard_negative is None
+
+
+def test_nothing_to_compare_with_verified_delivery_does_not_veto():
+    # The live Token Verdict record (2026-10-25): delivery_verified,
+    # quality 82, delivered receipt — but Settled's listing copy has
+    # no usable sample, so the receipt verdict is nothing_to_compare.
+    # That must corroborate-and-note, never veto.
+    payload = load("settled_check_verified.json")
+    payload["delivery_receipt"]["checks"] = {
+        "verdict": "nothing_to_compare",
+        "as_advertised": None,
+        "fields": None,
+        "notes": ["the listing has no sample response to compare against"],
+    }
+    report = SettledReport.from_payload(TOKEN_URL, payload)
+    assert report.available and report.found
+    assert report.delivery_verified is True
+    assert report.receipt_delivered is True
+    assert report.receipt_verdict == "nothing_to_compare"
+    assert report.nothing_to_compare is True
+    assert report.corroborated is True
+    assert report.hard_negative is None
+    described = report.describe()
+    assert "nothing to compare" in described
+    assert "proceeding on verified delivery" in described
+
+
+def test_nothing_to_compare_without_verified_delivery_passes_through():
+    # No verified delivery + nothing_to_compare: neither a
+    # corroboration nor a veto — the pass proceeds on RouteVerdict
+    # alone, exactly like an untested endpoint.
+    payload = load("settled_check_verified.json")
+    payload["delivery_verified"] = False
+    payload["delivery_receipt"]["checks"] = {
+        "verdict": "nothing_to_compare",
+        "as_advertised": None,
+        "fields": None,
+        "notes": ["the listing has no sample response to compare against"],
+    }
+    report = SettledReport.from_payload(TOKEN_URL, payload)
+    assert report.nothing_to_compare is True
+    assert report.corroborated is False
+    assert report.hard_negative is None
+    assert "not a delivery failure" in report.describe()
 
 
 def test_explicit_not_payable_verdict_vetoes():

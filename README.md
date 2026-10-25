@@ -126,11 +126,16 @@ the receipt — paid, delivered (or not), and whether the response matched the
 advertised schema. So before the loop pays RouteVerdict to vet a new service,
 it asks Settled, for free, what Settled's own money found:
 
-- **Hard negative on record** — a delivery receipt with `delivered=false`, a
-  receipt verdict other than `as_advertised`, or an explicit not-payable
-  verdict → the service is **not adopted, whatever RouteVerdict says**. In
-  live mode the paid check is skipped entirely; in dry-run the note is
-  printed alongside the would-pay line.
+- **Hard negative on record** — a delivery receipt with `delivered=false`,
+  or an explicit not-payable verdict → the service is **not adopted,
+  whatever RouteVerdict says**. In live mode the paid check is skipped
+  entirely; in dry-run the note is printed alongside the would-pay line.
+  A receipt's comparison verdict (`as_advertised`, `partial_match`,
+  `nothing_to_compare`, ...) never vetoes on its own — it grades the
+  listing's sample, not the delivery. `nothing_to_compare` in
+  particular (Settled's copy of the listing has no usable sample to
+  compare fields against) is logged distinctly and, when delivery is
+  verified, the loop proceeds on that verified delivery.
 - **`delivery_verified: true`** → the ADOPT line is annotated as
   corroborated. That is all it does: the TRUSTED ≥ 80 rule is never
   loosened by a Settled record.
