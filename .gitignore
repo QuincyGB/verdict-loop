@@ -7,3 +7,7 @@ verdict-loop-budget.json
 # wallet material must never enter this repo
 *.key
 .env
+# x402-guard local state (drift cache + audit log) — the guard is the
+# loop's payment path; its state is local data, never commit
+x402-guard.db
+x402-guard-audit.jsonl

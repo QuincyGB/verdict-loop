@@ -29,6 +29,18 @@ whatever RouteVerdict says (in live mode the paid check is skipped
 entirely). On by default; --no-settled, SETTLED_CHECK=0, or
 "settled_check": false in the config turns it off. A Settled outage
 never blocks the loop.
+
+Payment path: every payment the loop makes runs through x402-guard
+(the fleet's buyer-side middleware, dogfooded here). The guard's
+pipeline — Settled pre-flight (the stage above, same fixed narrow-
+veto semantics), a StallRow Recheck drift check on the target
+($0.005, cached 24h), a RouteVerdict gate for large first payments,
+and spend caps — runs before anything is signed. The loop's
+DailySpendCap is handed to the guard as its budget, so every settled
+call (the guard's own check calls included) is authorized and
+recorded against the one $0.10/day cap. Guard state (drift cache,
+audit log) lives in local files named by the config's "guard"
+section; both are gitignored.
 """
 
 from __future__ import annotations
@@ -41,6 +53,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from x402_guard import GuardBlocked, GuardConfig, GuardedClient
+from x402_guard.config import DEFAULT_RECHECK_URL
 
 from .budget import DailySpendCap
 from .decide import (
@@ -49,7 +63,6 @@ from .decide import (
     decide_service,
     decide_token,
 )
-from .settled_check import fetch_settled_report
 from .wallet import usdc_balance_units
 from .x402 import (
     ServiceError,
@@ -192,20 +205,53 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
 
     _scrub_no_proxy()
     with httpx.Client(timeout=30.0) as http:
+        # The payment path is x402-guard (dogfood): every payment
+        # below is pre-flighted through its pipeline before anything
+        # is signed. The loop's DailySpendCap rides along as the
+        # guard's budget, so the guard's own check calls are
+        # authorized and recorded against the same daily cap.
+        guard_settings = config.get("guard") or {}
+        guard = GuardedClient(
+            account=account,
+            budget=budget,
+            http=http,
+            config=GuardConfig(
+                settled_enabled=settled_on,
+                drift_enabled=bool(guard_settings.get("drift_enabled", True)),
+                drift_ttl_seconds=float(
+                    guard_settings.get("drift_ttl_seconds", 86_400)
+                ),
+                recheck_url=guard_settings.get("recheck_url", DEFAULT_RECHECK_URL),
+                route_verdict_url=route_url,
+                store_path=guard_settings.get("store_path", "x402-guard.db"),
+                audit_log_path=guard_settings.get(
+                    "audit_log_path", "x402-guard-audit.jsonl"
+                ),
+            ),
+        )
+
         # --- 1. token screening ---------------------------------------------
         for entry in tokens:
             address = entry["address"]
             chain = entry.get("chain", "base")
             label = entry.get("label", address)
             try:
-                outcome = call_paid_endpoint(
-                    http, token_url, {"address": address, "chain": chain},
-                    account=account, budget=budget,
+                gres = guard.pay(
+                    token_url, {"address": address, "chain": chain}
                 )
+            except GuardBlocked as blocked:
+                gdecision = blocked.decision
+                if gdecision.settled_report is not None:
+                    out(f"[settled] {token_url}: "
+                        f"{gdecision.settled_report.describe()}")
+                out(f"[token] {label}: BLOCKED by x402-guard — "
+                    f"{'; '.join(gdecision.reasons)}")
+                continue
             except ServiceError as exc:
                 errors += 1
                 out(f"[token] {label} ({address}, {chain}): ERROR {exc}")
                 continue
+            outcome = gres.outcome
             planned.append(outcome.price_units)
             if outcome.mode == "dry_run":
                 would_spend += outcome.price_units
@@ -230,34 +276,49 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                 tx = (outcome.receipt or {}).get("transaction")
                 if tx:
                     out(f"        settlement tx: {tx}")
+            if gres.decision.warnings or (
+                outcome.mode == "dry_run" and gres.decision.blocked
+            ):
+                out(f"        guard: {gres.decision.summary()}")
 
         # --- 2. new-service checks -------------------------------------------
         for resource_url in services:
-            # Pre-flight: Settled's delivery record, consulted for free
-            # BEFORE the paid RouteVerdict check. Advisory + narrow veto.
-            sreport = None
-            veto = None
-            if settled_on:
-                sreport = fetch_settled_report(http, resource_url)
-                out(f"[settled] {resource_url}: {sreport.describe()}")
-                veto = sreport.hard_negative
-                if veto:
-                    out(f"        Settled hard negative: {veto}")
-            if veto and live:
-                # Nothing left to ask RouteVerdict: the service cannot be
-                # adopted, so the paid check is skipped entirely.
-                out(f"[service] {resource_url}: -> PASS (Settled pre-flight "
-                    f"veto — RouteVerdict check skipped, nothing paid)")
-                continue
+            # The guard runs the Settled pre-flight (advisory + the
+            # narrow veto) as stage 1 of its pipeline, then — only if
+            # the target passes — makes the paid RouteVerdict check.
             try:
-                outcome = call_paid_endpoint(
-                    http, route_url, {"resource_url": resource_url},
-                    account=account, budget=budget,
+                gres = guard.pay_on_behalf(
+                    resource_url, route_url, {"resource_url": resource_url}
                 )
+            except GuardBlocked as blocked:
+                gdecision = blocked.decision
+                sreport = gdecision.settled_report
+                if sreport is not None:
+                    out(f"[settled] {resource_url}: {sreport.describe()}")
+                    if gdecision.settled_veto:
+                        out(f"        Settled hard negative: "
+                            f"{gdecision.settled_veto}")
+                if gdecision.settled_veto:
+                    # Nothing left to ask RouteVerdict: the service
+                    # cannot be adopted, and the guard refused before
+                    # anything was signed or paid.
+                    out(f"[service] {resource_url}: -> PASS (Settled pre-flight "
+                        f"veto — RouteVerdict check skipped, nothing paid)")
+                else:
+                    out(f"[service] {resource_url}: BLOCKED by x402-guard — "
+                        f"{'; '.join(gdecision.reasons)}")
+                continue
             except ServiceError as exc:
                 errors += 1
                 out(f"[service] {resource_url}: ERROR {exc}")
                 continue
+            outcome = gres.outcome
+            sreport = gres.decision.settled_report
+            veto = gres.decision.settled_veto
+            if sreport is not None:
+                out(f"[settled] {resource_url}: {sreport.describe()}")
+                if veto:
+                    out(f"        Settled hard negative: {veto}")
             planned.append(outcome.price_units)
             if outcome.mode == "dry_run":
                 would_spend += outcome.price_units
@@ -289,6 +350,8 @@ def run_pass(config: dict, *, live: bool, settled: bool | None = None, out=print
                 tx = (outcome.receipt or {}).get("transaction")
                 if tx:
                     out(f"        settlement tx: {tx}")
+            if gres.decision.warnings:
+                out(f"        guard: {gres.decision.summary()}")
 
     # --- 3. summary -----------------------------------------------------------
     out("--- summary ---")

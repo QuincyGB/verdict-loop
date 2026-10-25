@@ -32,16 +32,17 @@ transaction hash, so the spend is verifiable on-chain by anyone.
 ## Architecture (6 lines)
 
 1. `verdict_loop/loop.py` runs one pass over a JSON watchlist (config file).
-2. Every call goes through `verdict_loop/x402.py`: unpaid POST → parse the 402 challenge → (live only) EIP-3009/EIP-712 sign → retry with `PAYMENT-SIGNATURE`.
+2. Every payment runs through **x402-guard** (see *Payment path* below): its pipeline pre-flights the target before the loop's money moves. Under the guard sits the same 402 flow as always: unpaid POST → parse the 402 challenge → (live only) EIP-3009/EIP-712 sign → retry with `PAYMENT-SIGNATURE`.
 3. `verdict_loop/decide.py` maps verdicts to decisions with pure functions: WOULD_BUY only a `SOLID` token at risk ≤ 40; ADOPT only a `TRUSTED` service at trust ≥ 80.
-4. `verdict_loop/budget.py` is a file-backed daily spend cap (default **$0.10**) that authorizes every payment *before* it is signed.
+4. `verdict_loop/budget.py` is a file-backed daily spend cap (default **$0.10**) that authorizes every payment *before* it is signed — the guard's own check calls included, via the budget object handed to it.
 5. Dry-run is the default and cannot pay: it parses the real live challenge and reports the price it *would* pay and the standing policy — it never invents a verdict.
-6. Before each service check, `verdict_loop/settled_check.py` asks Settled (free, read-only) what its scout's test purchases found about that endpoint — advisory, plus one narrow veto (see *Pre-flight* below).
+6. The Settled pre-flight is stage 1 of the guard's pipeline (advisory, plus one narrow veto — see *Pre-flight* below). `verdict_loop/settled_check.py` remains in this repo as the reference implementation the guard's port was taken from, with its own tests.
 
 ## Quickstart (dry-run first)
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e ../x402-guard/python   # the payment path (sibling repo; PyPI release pending)
 cp config.example.json config.json        # edit the watchlist to taste
 .venv/bin/python -m verdict_loop --config config.json
 ```
@@ -82,8 +83,11 @@ AGENT_PRIVATE_KEY=0x... .venv/bin/python -m verdict_loop --config config.json --
   never mid-screen. If the balance cannot be read at all (public RPCs
   down), the run warns and proceeds on the cap alone.
 - The cap ledger resets on the UTC day boundary.
-- Start with the default watchlist: a full pass costs $0.09, inside the cap.
-  Raising the cap or the watchlist is your explicit choice, in the config.
+- Start with the default watchlist: a full pass costs $0.09 in service
+  calls, plus up to $0.005 of x402-guard drift checks when its cache is
+  cold (the watchlist's calls share one endpoint, so one Recheck look
+  covers the pass) — $0.095 worst case, inside the cap. Raising the cap
+  or the watchlist is your explicit choice, in the config.
 - Never commit a key. `.gitignore` already excludes `*.key` and `.env`.
 
 ## Configuration
@@ -98,6 +102,10 @@ AGENT_PRIVATE_KEY=0x... .venv/bin/python -m verdict_loop --config config.json --
 - `settled_check` (default `true`): the Settled pre-flight below. The
   `--settled` / `--no-settled` flags and the `SETTLED_CHECK` env var
   (`0`/`false`/`no`/`off` disables) override it, in that order.
+- `guard`: `{store_path, audit_log_path, drift_enabled, drift_ttl_seconds,
+  recheck_url}` — the x402-guard payment path's local state and drift
+  stage (below). Defaults: `x402-guard.db` + `x402-guard-audit.jsonl`
+  in the working directory, drift on, 24h TTL.
 
 ## How the fleet plugs in
 
@@ -155,6 +163,33 @@ The pattern is the point of this repo, so steal it: *before your agent's
 first payment to an unfamiliar endpoint, check the delivery record of
 someone who has already paid it.*
 
+## Payment path: x402-guard (dogfood)
+
+This loop is the reference deployment of
+[x402-guard](https://github.com/QuincyGB/x402-guard) — Verdict Row's
+buyer-side middleware. The loop doesn't call the services directly
+any more; every payment is made by the guard's `GuardedClient`,
+which runs this pipeline *before anything is signed*:
+
+1. **Settled pre-flight** (free) — the stage described above.
+2. **Drift check** — StallRow Recheck ($0.005) fingerprints the
+   target's live payment terms, cached 24h in the guard's local
+   store: a moved `payTo` or asset blocks the payment; a price move
+   over 20% blocks; lesser changes warn.
+3. **RouteVerdict gate** — first payments ≥ $0.10 would require a
+   TRUSTED verdict (the loop's own calls are all below that, so the
+   gate is armed but never fires here).
+4. **Caps** — the loop's `DailySpendCap`, handed to the guard as its
+   budget: check calls and service calls alike are authorized and
+   recorded against the one $0.10/day cap.
+
+Every decision lands in the guard's audit log (config
+`guard.audit_log_path`, JSONL, gitignored) — the loop's own stdout
+format and this log's format are unchanged by the integration, and
+`tests/test_guard_integration.py` proves the guard is what's
+executing (a drift block stops a service payment before RouteVerdict
+is paid; a second pass inside the TTL makes no second Recheck call).
+
 ## Tests
 
 Offline (the 402 fixtures are real challenges captured from the live
@@ -172,7 +207,9 @@ payment *before* anything is signed and that a dry run can never spend —
 and the Settled pre-flight: captured real `settled_check` records
 (corroborated / known-untested / unknown), the veto and its narrowness,
 and outage degradation, all driven through mock transports in full
-loop passes.
+loop passes — plus the x402-guard integration: the guard executing
+the loop's payments, its audit log and drift cache, a drift block,
+and cache reuse across passes.
 
 ## License
 

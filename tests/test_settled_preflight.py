@@ -1,8 +1,10 @@
 """Settled pre-flight inside a full loop pass.
 
-Offline: one MockTransport routes both hosts — the RouteVerdict
-endpoint (real captured 402 challenge, then a paid TRUSTED 85 answer)
-and Settled's free MCP endpoint. The properties under test:
+Offline: one MockTransport routes the hosts — the RouteVerdict
+endpoint (real captured 402 challenge, then a paid TRUSTED 85 answer),
+Settled's free MCP endpoint, and StallRow Recheck (the x402-guard
+drift stage the loop's payments now run through). The properties
+under test:
 
 - corroboration annotates an ADOPT but never creates one,
 - a Settled hard negative vetoes adoption — in live mode the paid
@@ -94,19 +96,52 @@ class FakeRouteService:
         return httpx.Response(402, headers={"payment-required": self.challenge_header})
 
 
+PAY_TO = "0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F"
+
+
+class FakeRecheck:
+    """StallRow /v1/recheck as the guard's drift stage sees it:
+    402 (a $0.005 challenge) until paid, then a BASELINE answer."""
+
+    def __init__(self):
+        self.paid_attempts = 0
+        challenge = load("route_verdict_402_challenge.json")
+        challenge["accepts"][0]["amount"] = "5000"
+        self.challenge_header = base64.b64encode(
+            json.dumps(challenge).encode()
+        ).decode()
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.headers.get("PAYMENT-SIGNATURE"):
+            self.paid_attempts += 1
+            return httpx.Response(200, json={
+                "watch_id": "w", "url": TARGET, "kind": "x402",
+                "status": "BASELINE", "changes": [],
+                "current": {"amount": "20000", "payTo": PAY_TO},
+                "checked_at": "2026-10-25T00:00:00Z", "summary": "baseline",
+            })
+        return httpx.Response(
+            402, headers={"payment-required": self.challenge_header}
+        )
+
+
 class Router:
     """Dispatches by host; optionally takes Settled down entirely."""
 
-    def __init__(self, route_service, settled_fake, *, settled_down=False):
+    def __init__(self, route_service, settled_fake, *, settled_down=False,
+                 recheck=None):
         self.route_service = route_service
         self.settled_fake = settled_fake
         self.settled_down = settled_down
+        self.recheck = recheck if recheck is not None else FakeRecheck()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "settled.tools":
             if self.settled_down:
                 raise httpx.ConnectError("settled unreachable", request=request)
             return self.settled_fake(request)
+        if request.url.host == "stall-row-production.up.railway.app":
+            return self.recheck(request)
         return self.route_service(request)
 
 
@@ -117,6 +152,10 @@ def make_config(tmp_path) -> dict:
         "route_verdict_url": ROUTE_URL,
         "daily_cap_usd": 0.10,
         "budget_state": str(tmp_path / "budget.json"),
+        "guard": {
+            "store_path": str(tmp_path / "guard.db"),
+            "audit_log_path": str(tmp_path / "guard-audit.jsonl"),
+        },
     }
 
 
@@ -149,7 +188,10 @@ def test_adopt_with_settled_corroboration(tmp_path, monkeypatch):
     assert "corroborated by Settled" in text
     assert route.paid_attempts == 1
     cap = DailySpendCap(100_000, state_path=tmp_path / "budget.json")
-    assert cap.spent_units == 50_000  # only the RouteVerdict check; Settled is free
+    # The RouteVerdict check ($0.05) plus the guard's Recheck drift
+    # check on the target ($0.005). Settled is free, and the guard's
+    # check calls ride the same daily budget by design (dogfood).
+    assert cap.spent_units == 55_000
 
 
 def test_settled_veto_skips_the_paid_check(tmp_path, monkeypatch):

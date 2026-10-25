@@ -83,18 +83,51 @@ class FakeRouteService:
         return httpx.Response(402, headers={"payment-required": self.challenge_header})
 
 
+PAY_TO = "0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F"
+
+
+class FakeRecheck:
+    """StallRow /v1/recheck as the guard's drift stage sees it:
+    402 (a $0.005 challenge) until paid, then a BASELINE answer."""
+
+    def __init__(self):
+        self.paid_attempts = 0
+        challenge = load("route_verdict_402_challenge.json")
+        challenge["accepts"][0]["amount"] = "5000"
+        self.challenge_header = base64.b64encode(
+            json.dumps(challenge).encode()
+        ).decode()
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.headers.get("PAYMENT-SIGNATURE"):
+            self.paid_attempts += 1
+            return httpx.Response(200, json={
+                "watch_id": "w", "url": TARGET, "kind": "x402",
+                "status": "BASELINE", "changes": [],
+                "current": {"amount": "20000", "payTo": PAY_TO},
+                "checked_at": "2026-10-25T00:00:00Z", "summary": "baseline",
+            })
+        return httpx.Response(
+            402, headers={"payment-required": self.challenge_header}
+        )
+
+
 class Router:
-    """eth_call -> the balance fake; settled.tools -> Settled; else the
+    """eth_call -> the balance fake; settled.tools -> Settled;
+    stall-row -> the Recheck fake (the guard's drift stage); else the
     RouteVerdict fake. balance_units=None plays a broken RPC."""
 
     def __init__(self, route_service, *, balance_units):
         self.route_service = route_service
         self.settled = FakeSettledMcp()
+        self.recheck = FakeRecheck()
         self.balance_units = balance_units
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "settled.tools":
             return self.settled(request)
+        if request.url.host == "stall-row-production.up.railway.app":
+            return self.recheck(request)
         try:
             body = json.loads(request.content)
         except ValueError:
@@ -116,6 +149,10 @@ def make_config(tmp_path) -> dict:
         "route_verdict_url": ROUTE_URL,
         "daily_cap_usd": 0.10,
         "budget_state": str(tmp_path / "budget.json"),
+        "guard": {
+            "store_path": str(tmp_path / "guard.db"),
+            "audit_log_path": str(tmp_path / "guard-audit.jsonl"),
+        },
     }
 
 

@@ -1,2 +1,6 @@
 httpx==0.28.1
 eth-account==0.14.0
+# x402-guard (the loop's payment path) is a sibling repo in this
+# workspace and is installed editable into the venv:
+#   pip install -e ../x402-guard/python
+# It will be pinned to the PyPI release once published.
