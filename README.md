@@ -195,6 +195,11 @@ which runs this pipeline *before anything is signed*:
    budget: check calls and service calls alike are authorized and
    recorded against the one $0.10/day cap.
 
+The guard's drift checks for this loop's watchlist endpoint are
+covered by a recheck pack where configured; the $0.10/day cap still
+authorizes every spend — pack mint included — before anything is
+signed.
+
 Every decision lands in the guard's audit log (config
 `guard.audit_log_path`, JSONL, gitignored) — the loop's own stdout
 format and this log's format are unchanged by the integration, and
