@@ -185,13 +185,26 @@ def sign_authorization(account, requirement: dict, authorization: dict) -> str:
 def build_payment_payload(
     challenge: dict, requirement: dict, authorization: dict, signature: str
 ) -> dict:
-    """The x402 v2 PaymentPayload the paid retry carries."""
-    return {
+    """The x402 v2 PaymentPayload the paid retry carries.
+
+    The challenge's `extensions` (notably the Bazaar discovery
+    declaration) MUST be echoed into the payload: facilitator
+    catalogues (CDP Bazaar, PayAI) index a resource from the payment
+    payload's bazaar extension, not from the seller's 402 — a payload
+    without it settles fine but is never catalogued. (Root cause of
+    the fleet's settled-but-unindexed routes; see the drought-fix
+    report, 2026-10-29.)
+    """
+    payload = {
         "x402Version": challenge.get("x402Version", 2),
         "resource": challenge.get("resource"),
         "accepted": requirement,
         "payload": {"authorization": authorization, "signature": signature},
     }
+    extensions = challenge.get("extensions")
+    if extensions:
+        payload["extensions"] = extensions
+    return payload
 
 
 def encode_payment_header(payload: dict) -> str:
