@@ -464,3 +464,28 @@ spent this pass: $0.00 | spent today: $0.00 of $0.10 cap
 </details>
 
 <!-- entry spent_usd=0.000000 cumulative_usd=0.860000 -->
+## 2026-11-05 — live run (exit 1)
+
+- **Balance guard:** payer held $3.727438 USDC; planned spend $0.09.
+- **Services vetted:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: **ERROR** (request failed: HTTP 502: {'error': 'internal failure', 'code': 'internal_error'})
+- **Calls:** 0 planned, 3 errors.
+- **Spent:** $0.00 this run ($0.00 today of $0.10 cap) · **Cumulative logged spend: $0.860000**
+
+<details><summary>Full run output</summary>
+
+```text
+=== verdict-loop pass @ 2026-11-05T12:57:08Z — mode: LIVE ===
+payer: 0xa4f183a6799F0310FcCC545B07F2DcC960223de2 | daily cap: $0.10 | already spent today: $0.00
+balance guard: payer holds $3.727438 USDC on Base; planned spend $0.09
+[token] Wrapped Ether (Base) (0x4200000000000000000000000000000000000006, base): ERROR request failed: HTTP 502: {'error': 'internal failure', 'code': 'internal_error'}
+[token] Aerodrome AERO (Base) (0x940181a94A35A4569E4529A3CDfB74e38FD98631, base): ERROR request failed: HTTP 502: {'error': 'internal failure', 'code': 'internal_error'}
+[service] https://token-verdict-production.up.railway.app/v1/verdict: ERROR request failed: HTTP 502: {'error': 'internal failure', 'code': 'internal_error'}
+--- summary ---
+calls planned: 0 | errors: 3
+spent this pass: $0.00 | spent today: $0.00 of $0.10 cap
+```
+
+</details>
+
+<!-- entry spent_usd=0.000000 cumulative_usd=0.860000 -->
