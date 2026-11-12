@@ -874,3 +874,45 @@ spent this pass: $0.095 | spent today: $0.095 of $0.10 cap
 </details>
 
 <!-- entry spent_usd=0.095000 cumulative_usd=1.055000 -->
+## 2026-11-12 — live run
+
+- **Balance guard:** payer held $2.835438 USDC; planned spend $0.09.
+- **Tokens screened:**
+  - Wrapped Ether (Base) (WETH): verdict **SOLID**, risk 16.4 → **WOULD_BUY** (SOLID with risk score 16.4 <= max 40)
+    - take: WETH (Wrapped Ether) trades at $2020.5 on pancakeswap with $4.14M in liquidity. On the positive side: Deep liquidity ($4,142,113) — the book
+    - settlement tx: [`0x1dc13805355700a742447b7910a7fdc243d5d97faaa88adba124db55e8fec33c`](https://basescan.org/tx/0x1dc13805355700a742447b7910a7fdc243d5d97faaa88adba124db55e8fec33c)
+  - Aerodrome AERO (Base) (AERO): verdict **SOLID**, risk 17.3 → **WOULD_BUY** (SOLID with risk score 17.3 <= max 40)
+    - take: AERO (Aerodrome) trades at $0.523 on aerodrome with $4.16M in liquidity. On the positive side: Deep liquidity ($4,160,506) — the book can ab
+    - settlement tx: [`0x5360e9336e010679060807ebfad6af2b403370b58328cdd43fdc7199c879dbfd`](https://basescan.org/tx/0x5360e9336e010679060807ebfad6af2b403370b58328cdd43fdc7199c879dbfd)
+- **Settled pre-flight:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 94/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+- **Services vetted:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: verdict **TRUSTED**, trust 100 → **ADOPT** (TRUSTED with trust score 100 >= min 80)
+    - settlement tx: [`0x2147c1510d0bcb7a57d20feefa71a0d4d2ac9c497c1c66836a5132817537cd0c`](https://basescan.org/tx/0x2147c1510d0bcb7a57d20feefa71a0d4d2ac9c497c1c66836a5132817537cd0c)
+- **Calls:** 3 planned, 0 errors.
+- **Spent:** $0.10 this run ($0.10 today of $0.10 cap) · **Cumulative logged spend: $1.150000**
+
+<details><summary>Full run output</summary>
+
+```text
+=== verdict-loop pass @ 2026-11-12T12:57:53Z — mode: LIVE ===
+payer: 0xa4f183a6799F0310FcCC545B07F2DcC960223de2 | daily cap: $0.10 | already spent today: $0.00
+balance guard: payer holds $2.835438 USDC on Base; planned spend $0.09
+[token] Wrapped Ether (Base) (WETH): verdict SOLID risk 16.4 -> WOULD_BUY (SOLID with risk score 16.4 <= max 40)
+        take: WETH (Wrapped Ether) trades at $2020.5 on pancakeswap with $4.14M in liquidity. On the positive side: Deep liquidity ($4,142,113) — the book
+        settlement tx: 0x1dc13805355700a742447b7910a7fdc243d5d97faaa88adba124db55e8fec33c
+[token] Aerodrome AERO (Base) (AERO): verdict SOLID risk 17.3 -> WOULD_BUY (SOLID with risk score 17.3 <= max 40)
+        take: AERO (Aerodrome) trades at $0.523 on aerodrome with $4.16M in liquidity. On the positive side: Deep liquidity ($4,160,506) — the book can ab
+        settlement tx: 0x5360e9336e010679060807ebfad6af2b403370b58328cdd43fdc7199c879dbfd
+[settled] https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 94/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+[service] https://token-verdict-production.up.railway.app/v1/verdict: verdict TRUSTED trust 100 -> ADOPT (TRUSTED with trust score 100 >= min 80)
+        corroborated by Settled: its scout's test purchase of this endpoint delivered as advertised — the adoption stands on RouteVerdict's rule alone; Settled only confirms it
+        settlement tx: 0x2147c1510d0bcb7a57d20feefa71a0d4d2ac9c497c1c66836a5132817537cd0c
+--- summary ---
+calls planned: 3 | errors: 0
+spent this pass: $0.095 | spent today: $0.095 of $0.10 cap
+```
+
+</details>
+
+<!-- entry spent_usd=0.095000 cumulative_usd=1.150000 -->
