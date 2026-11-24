@@ -1361,3 +1361,42 @@ spent this pass: $0.00 | spent today: $0.00 of $0.10 cap
 </details>
 
 <!-- entry spent_usd=0.000000 cumulative_usd=2.025000 -->
+## 2026-11-24 — live run
+
+- **Balance guard:** payer held $4.484785 USDC; planned spend $0.07.
+- **Tokens screened:**
+  - Aerodrome AERO (Base) (AERO): verdict **SOLID**, risk 12.7 → **WOULD_BUY** (SOLID with risk score 12.7 <= max 40)
+    - take: AERO (Aerodrome) trades at $0.4109 on aerodrome with $3.32M in liquidity. On the positive side: Deep liquidity ($3,320,941) — the book can a
+    - settlement tx: [`0x223b8e0b4bda2237aba463864e064dac1afe61978856b2aa9dbe22f25a66d79e`](https://basescan.org/tx/0x223b8e0b4bda2237aba463864e064dac1afe61978856b2aa9dbe22f25a66d79e)
+- **Settled pre-flight:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 88/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+  - https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 88/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+- **Services vetted:**
+  - https://token-verdict-production.up.railway.app/v1/verdict: verdict **TRUSTED**, trust 100 → **ADOPT** (TRUSTED with trust score 100 >= min 80)
+    - settlement tx: [`0x9ef05e007b26a61a80934675dd9c4a4001b13a7f016b63f33a4535365bc1b127`](https://basescan.org/tx/0x9ef05e007b26a61a80934675dd9c4a4001b13a7f016b63f33a4535365bc1b127)
+- **Calls:** 2 planned, 0 errors.
+- **Spent:** $0.06 this run ($0.06 today of $0.10 cap) · **Cumulative logged spend: $2.080000**
+
+<details><summary>Full run output</summary>
+
+```text
+=== verdict-loop pass @ 2026-11-24T12:57:09Z — mode: LIVE ===
+payer: 0xa4f183a6799F0310FcCC545B07F2DcC960223de2 | daily cap: $0.10 | already spent today: $0.00
+balance guard: payer holds $4.484785 USDC on Base; planned spend $0.07
+[settled] https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 88/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+[token] Wrapped Ether (Base): BLOCKED by x402-guard — Recheck: CHANGED — payTo changed (0x097f9685D1e0752bF8B02d61E5Ce9be7eA0FBA7F -> 0x4e31ec77ca099fd95cbc1c4042ca26a249a38181)
+[token] Aerodrome AERO (Base) (AERO): verdict SOLID risk 12.7 -> WOULD_BUY (SOLID with risk score 12.7 <= max 40)
+        take: AERO (Aerodrome) trades at $0.4109 on aerodrome with $3.32M in liquidity. On the positive side: Deep liquidity ($3,320,941) — the book can a
+        settlement tx: 0x223b8e0b4bda2237aba463864e064dac1afe61978856b2aa9dbe22f25a66d79e
+[settled] https://token-verdict-production.up.railway.app/v1/verdict: Settled knows this endpoint, status live, quality 88/100, delivery VERIFIED by a Settled test purchase, latest receipt had nothing to compare (no usable sample in Settled's listing) — proceeding on verified delivery
+[service] https://token-verdict-production.up.railway.app/v1/verdict: verdict TRUSTED trust 100 -> ADOPT (TRUSTED with trust score 100 >= min 80)
+        corroborated by Settled: its scout's test purchase of this endpoint delivered as advertised — the adoption stands on RouteVerdict's rule alone; Settled only confirms it
+        settlement tx: 0x9ef05e007b26a61a80934675dd9c4a4001b13a7f016b63f33a4535365bc1b127
+--- summary ---
+calls planned: 2 | errors: 0
+spent this pass: $0.055 | spent today: $0.055 of $0.10 cap
+```
+
+</details>
+
+<!-- entry spent_usd=0.055000 cumulative_usd=2.080000 -->
